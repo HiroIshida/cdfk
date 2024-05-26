@@ -4,7 +4,8 @@ import numpy as np
 import pinocchio as pin
 from robot_descriptions.jaxon_description import URDF_PATH as JAXON_URDF_PATH
 from robot_descriptions.loaders.pinocchio import load_robot_description
-from skrobot.model.primitives import Box
+from skrobot.coordinates import Coordinates
+from skrobot.model.primitives import Axis, Box
 
 from cdfk.transcription import (
     EndEffectorConfig,
@@ -49,15 +50,15 @@ manip_pose = {
 }
 
 
-efconf1 = EndEffectorConfig("rleg1", "RLEG_LINK5", np.array([0.125, 0.05, -0.1]))
-efconf2 = EndEffectorConfig("rleg2", "RLEG_LINK5", np.array([0.125, -0.065, -0.1]))
-efconf3 = EndEffectorConfig("rleg3", "RLEG_LINK5", np.array([-0.10, 0.05, -0.1]))
-efconf4 = EndEffectorConfig("rleg4", "RLEG_LINK5", np.array([-0.10, -0.065, -0.1]))
+efconf1 = EndEffectorConfig("rfoot1", "RLEG_LINK5", np.array([0.125, 0.05, -0.1]))
+efconf2 = EndEffectorConfig("rfoot2", "RLEG_LINK5", np.array([0.125, -0.065, -0.1]))
+efconf3 = EndEffectorConfig("rfoot3", "RLEG_LINK5", np.array([-0.10, 0.05, -0.1]))
+efconf4 = EndEffectorConfig("rfoot4", "RLEG_LINK5", np.array([-0.10, -0.065, -0.1]))
 
-efconf5 = EndEffectorConfig("lleg1", "LLEG_LINK5", np.array([0.125, -0.05, -0.1]))
-efconf6 = EndEffectorConfig("lleg2", "LLEG_LINK5", np.array([0.125, 0.065, -0.1]))
-efconf7 = EndEffectorConfig("lleg3", "LLEG_LINK5", np.array([-0.10, -0.05, -0.1]))
-efconf8 = EndEffectorConfig("lleg4", "LLEG_LINK5", np.array([-0.10, 0.065, -0.1]))
+efconf5 = EndEffectorConfig("lfoot1", "LLEG_LINK5", np.array([0.125, -0.05, -0.1]))
+efconf6 = EndEffectorConfig("lfoot2", "LLEG_LINK5", np.array([0.125, 0.065, -0.1]))
+efconf7 = EndEffectorConfig("lfoot3", "LLEG_LINK5", np.array([-0.10, -0.05, -0.1]))
+efconf8 = EndEffectorConfig("lfoot4", "LLEG_LINK5", np.array([-0.10, 0.065, -0.1]))
 efconfs = [efconf1, efconf2, efconf3, efconf4, efconf5, efconf6, efconf7, efconf8]
 
 
@@ -91,17 +92,29 @@ for name, angle in manip_pose.items():
 
 const = EqConst(20, robot, efconfs)
 
+data = robot.model.createData()
+pin.forwardKinematics(robot.model, data, q)
+
+rs = []
+for i in range(4):
+    fid = robot.model.getFrameId(f"rfoot{i+1}")
+    pin.updateFramePlacement(robot.model, data, fid)
+    rs.append(data.oMf[fid].translation)
+print(rs)
+
+a1 = Axis.from_coords(Coordinates(rs[0]))
+a2 = Axis.from_coords(Coordinates(rs[1]))
+a3 = Axis.from_coords(Coordinates(rs[2]))
+a4 = Axis.from_coords(Coordinates(rs[3]))
+
+
 v = Viewer(JAXON_URDF_PATH, robot.model)
 ground = Box([2.0, 2.0, 0.1], pos=[0.0, 0.0, -0.05])
 v.update(q)
 v.viewer.add(ground)
+for a in [a1, a2, a3, a4]:
+    v.viewer.add(a)
 v.show()
 import time
 
 time.sleep(1000)
-
-
-# ts = time.time()
-# for _ in range(1000):
-#     const(np.zeros(const.var_range_table.ndim), True)
-# print("Time elapsed: ", (time.time() - ts) / 1000)
