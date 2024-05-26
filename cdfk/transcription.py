@@ -4,6 +4,8 @@ from typing import List, Tuple
 import numpy as np
 import pinocchio as pin
 
+from cdfk.pinocchio_wrap import PinocchioWrap
+
 
 @dataclass
 class VarnameRangeTable:
@@ -35,8 +37,10 @@ class VarnameRangeTable:
         for i in range(T):
             q_list.append(range(head, head + dof))
             head += dof
-            qd_list.append(range(head, head + dof))
-            head += dof
+            # dof - 1 because quaternion is represented by 4 variables
+            # but omega is represented by 3 variables
+            qd_list.append(range(head, head + (dof - 1)))
+            head += dof - 1
             r_list.append(range(head, head + 3))
             head += 3
             rd_list.append(range(head, head + 3))
@@ -144,48 +148,40 @@ class EqConstRangeTable:
 
 
 @dataclass
-class EndEffectorConfig:
-    name: str
-    parent_frame: str
-    trans: np.ndarray
-
-
-@dataclass
 class EqConst:
     var_range_table: VarnameRangeTable
     eq_range_table: EqConstRangeTable
     T: int
     m: float
-    ef_configs: List[EndEffectorConfig]
-    robot: pin.RobotWrapper
+    pinwrap: PinocchioWrap
 
-    def __init__(
-        self, T: int, robot: pin.RobotWrapper, end_effector_configs: List[EndEffectorConfig]
-    ):
-        dof = robot.nq
-        robot.mass
-        n_contact = len(end_effector_configs)
-        self.ef_configs = end_effector_configs
-
-        for ef_config in end_effector_configs:
-            relative = pin.SE3(np.eye(3), ef_config.trans)
-            parent_joint_idx = robot.model.frames[
-                robot.model.getFrameId(ef_config.parent_frame)
-            ].parent
-            new_frame = pin.Frame(
-                ef_config.name, parent_joint_idx, 0, relative, pin.FrameType.OP_FRAME
-            )
-            robot.model.addFrame(new_frame)
+    def __init__(self, T: int, pinwrap: PinocchioWrap):
+        dof = pinwrap.model.nq
+        n_contact = len(pinwrap.ee_fid_list)
 
         self.var_range_table = VarnameRangeTable.create(T, dof, n_contact)
         self.eq_range_table = EqConstRangeTable.create(T, dof, n_contact)
         self.T = T
-        self.m = pin.computeTotalMass(robot.model)
-        self.robot = robot
+        self.m = pin.computeTotalMass(pinwrap.model)
+        self.pinwrap = pinwrap
 
     @property
     def n_contact(self) -> int:
-        return len(self.ef_configs)
+        return len(self.pinwrap.ee_fid_list)
+
+    @staticmethod
+    def dquad_dt(q: np.ndarray, omega: np.ndarray):
+        qw, qx, qy, qz = q
+        wx, wy, wz = omega
+        dqdt = 0.5 * np.array(
+            [
+                -qx * wx - qy * wy - qz * wz,
+                qw * wx + qy * wz - qz * wy,
+                qw * wy - qx * wz + qz * wx,
+                qw * wz + qx * wy - qy * wx,
+            ]
+        )
+        return dqdt
 
     def __call__(self, vec: np.ndarray, with_jacobian: bool) -> Tuple[np.ndarray, np.ndarray]:
         out = np.zeros(self.eq_range_table.n_const)
@@ -215,14 +211,17 @@ class EqConst:
             out[self.eq_range_table.com_mom_list[i]] = var
 
             # (7c) centroidal angular momentum
-            Ag = pin.computeCentroidalMap(self.robot.model, self.robot.data, q_i)[3:, :]
+            Ag = pin.computeCentroidalMap(self.pinwrap.model, self.pinwrap.data, q_i)[3:, :]
             var = h_i - np.dot(Ag, qd_i)
             out[self.eq_range_table.cam_list[i]] = var
 
             if i > 0:
                 # (7d) qd_euler
+                x_i, quad_i, joint_i = q_i[:3], q_i[3:7], q_i[7:]
+                v_i, omega_i, jointd_i = qd_i[:3], qd_i[3:6], qd_i[6:]
+                dq = np.hstack([v_i, self.dquad_dt(quad_i, omega_i), jointd_i]) * dt_i
                 q_im = vec[self.var_range_table.q_list[i - 1]]
-                out[self.eq_range_table.qd_euler_list[i]] = (q_i - q_im) - dt_i * qd_i
+                out[self.eq_range_table.qd_euler_list[i]] = (q_i - q_im) - dq
 
                 # (7e) hd_euler
                 h_im = vec[self.var_range_table.h_list[i - 1]]
@@ -237,9 +236,9 @@ class EqConst:
                 out[self.eq_range_table.rdd_euler_list[i]] = (rd_i - rd_im) - dt_i * rdd_i
 
             # (7h) com
-            com = pin.centerOfMass(self.robot.model, self.robot.data, q_i)
+            com = pin.centerOfMass(self.pinwrap.model, self.pinwrap.data, q_i)
             out[self.eq_range_table.com_list[i]] = r_i - com
 
             # (7i) contact point kinematics
-            for efconf in self.ef_configs:
-                pass
+            # for efconf in self.ef_configs:
+            #     pass

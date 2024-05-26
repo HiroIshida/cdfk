@@ -3,16 +3,11 @@ import time
 import numpy as np
 import pinocchio as pin
 from robot_descriptions.jaxon_description import URDF_PATH as JAXON_URDF_PATH
-from robot_descriptions.loaders.pinocchio import load_robot_description
 from skrobot.coordinates import Coordinates
 from skrobot.model.primitives import Axis, Box
 
-from cdfk.transcription import (
-    EndEffectorConfig,
-    EqConst,
-    EqConstRangeTable,
-    VarnameRangeTable,
-)
+from cdfk.pinocchio_wrap import EndEffectorConfig, PinocchioWrap
+from cdfk.transcription import EqConst
 from cdfk.viewer_utils import Viewer
 
 manip_pose = {
@@ -62,57 +57,32 @@ efconf8 = EndEffectorConfig("lfoot4", "LLEG_LINK5", np.array([-0.10, 0.065, -0.1
 efconfs = [efconf1, efconf2, efconf3, efconf4, efconf5, efconf6, efconf7, efconf8]
 
 
-vrtable = VarnameRangeTable.create(10, 3, 2)
-eqtable = EqConstRangeTable.create(10, 3, 2)
-
-robot: pin.RobotWrapper = load_robot_description(
-    "jaxon_description", root_joint=pin.JointModelFreeFlyer()
-)
-
-# joint names
-joint_names = robot.model.names[1:]
-for i, name in enumerate(joint_names):
-    # show joint spec
-    jid = robot.model.getJointId(name)
-    joint = robot.model.joints[jid]
-    print(f"Joint {i}: jid {jid} {name}, type: {joint.shortname()}, nq: {joint.nq}")
+pinwrap = PinocchioWrap(JAXON_URDF_PATH, efconfs)
+const = EqConst(30, pinwrap)
 
 # create joint_name to index mapping
-q = pin.neutral(robot.model)
+q = pin.neutral(pinwrap.model)
 q[2] = 1.0
 for name, angle in manip_pose.items():
-    jid = robot.model.getJointId(name)
-    print(jid)
-    # set angle
-    # if jid = 1 then actual index is [0, 1, 2, 3, 4, 5, 6] 7
+    jid = pinwrap.model.getJointId(name)
     q[jid + 5] = angle
-    joint = robot.model.joints[jid]
-    print(f"{name}, type: {joint.shortname()}, nq: {joint.nq}")
 
+const(np.zeros(const.var_range_table.ndim), True)
 
-const = EqConst(20, robot, efconfs)
-
-data = robot.model.createData()
-pin.forwardKinematics(robot.model, data, q)
-
-rs = []
+pinwrap.forward_kinematics(q)
+axes = []
 for i in range(4):
-    fid = robot.model.getFrameId(f"rfoot{i+1}")
-    pin.updateFramePlacement(robot.model, data, fid)
-    rs.append(data.oMf[fid].translation)
-print(rs)
+    fid = pinwrap.get_frame_id(f"rfoot{i+1}")
+    coords = pinwrap.get_frame_coords(fid)
+    skcoords = Coordinates(pos=coords.translation, rot=coords.rotation)
+    axis = Axis.from_coords(skcoords)
+    axes.append(axis)
 
-a1 = Axis.from_coords(Coordinates(rs[0]))
-a2 = Axis.from_coords(Coordinates(rs[1]))
-a3 = Axis.from_coords(Coordinates(rs[2]))
-a4 = Axis.from_coords(Coordinates(rs[3]))
-
-
-v = Viewer(JAXON_URDF_PATH, robot.model)
+v = Viewer(JAXON_URDF_PATH, pinwrap.model)
 ground = Box([2.0, 2.0, 0.1], pos=[0.0, 0.0, -0.05])
 v.update(q)
 v.viewer.add(ground)
-for a in [a1, a2, a3, a4]:
+for a in axes:
     v.viewer.add(a)
 v.show()
 import time
