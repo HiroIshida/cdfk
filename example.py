@@ -58,7 +58,6 @@ efconfs = [efconf1, efconf2, efconf3, efconf4, efconf5, efconf6, efconf7, efconf
 
 
 pinwrap = PinocchioWrap(JAXON_URDF_PATH, efconfs)
-const = EqConst(30, pinwrap)
 
 # create joint_name to index mapping
 q = pin.neutral(pinwrap.model)
@@ -67,6 +66,7 @@ for name, angle in manip_pose.items():
     jid = pinwrap.model.getJointId(name)
     q[jid + 5] = angle
 
+const = EqConst(30, pinwrap, q)
 const(np.zeros(const.var_range_table.ndim), True)
 
 pinwrap.forward_kinematics(q)

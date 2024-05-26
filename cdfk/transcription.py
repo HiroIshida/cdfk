@@ -90,7 +90,7 @@ class EqConstRangeTable:
     rdd_euler_list: List[range]  # (7g)
     com_list: List[range]  # (7h)
     contact_point_kin_list: List[List[range]]  # (7i)
-    fixed_contact_list: List[List[range]]
+    fixed_contact_list: List[List[range]]  # (7j)
     n_const: int  # total number of equality constraints
 
     @classmethod
@@ -154,16 +154,24 @@ class EqConst:
     T: int
     m: float
     pinwrap: PinocchioWrap
+    ef_points_list: List[np.ndarray]
 
-    def __init__(self, T: int, pinwrap: PinocchioWrap):
+    def __init__(self, T: int, pinwrap: PinocchioWrap, q_ef_hold: np.ndarray):
         dof = pinwrap.model.nq
         n_contact = len(pinwrap.ee_fid_list)
+
+        pinwrap.forward_kinematics(q_ef_hold)
+        ef_points_list = []
+        for ee_fid in pinwrap.ee_fid_list:
+            co = pinwrap.get_frame_coords(ee_fid)
+            ef_points_list.append(co.translation)
 
         self.var_range_table = VarnameRangeTable.create(T, dof, n_contact)
         self.eq_range_table = EqConstRangeTable.create(T, dof, n_contact)
         self.T = T
         self.m = pin.computeTotalMass(pinwrap.model)
         self.pinwrap = pinwrap
+        self.ef_points_list = ef_points_list
 
     @property
     def n_contact(self) -> int:
@@ -194,6 +202,8 @@ class EqConst:
             h_i = vec[self.var_range_table.h_list[i]]
             hd_i = vec[self.var_range_table.hd_list[i]]
             dt_i = vec[self.var_range_table.dt_list[i]]
+
+            self.pinwrap.forward_kinematics(q_i)
 
             # (7a) com dynamics
             var = self.m * rdd_i - self.m * np.array([0, 0, 9.8])
@@ -240,5 +250,12 @@ class EqConst:
             out[self.eq_range_table.com_list[i]] = r_i - com
 
             # (7i) contact point kinematics
-            # for efconf in self.ef_configs:
-            #     pass
+            for j in range(self.n_contact):
+                c_ij = vec[self.var_range_table.c_list_list[i][j]]
+                p_ij = self.pinwrap.get_frame_coords(self.pinwrap.ee_fid_list[j]).translation
+                out[self.eq_range_table.contact_point_kin_list[i][j]] = c_ij - p_ij
+
+            # (7j) fixed contact
+            for j in range(self.n_contact):
+                c_ij = vec[self.var_range_table.c_list_list[i][j]]
+                out[self.eq_range_table.fixed_contact_list[i][j]] = c_ij - self.ef_points_list[j]
