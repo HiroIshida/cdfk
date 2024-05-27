@@ -124,16 +124,24 @@ class EqConstRangeTable:
             head += 3
             cam_list.append(range(head, head + 3))
             head += 3
-            qd_euler_list.append(range(head, head + dof))
-            head += dof
-            hd_euler_list.append(range(head, head + 3))
-            head += 3
-            rd_euler_list.append(range(head, head + 3))
-            head += 3
-            rdd_euler_list.append(range(head, head + 3))
-            head += 3
+            if i > 0:
+                qd_euler_list.append(range(head, head + dof))
+                head += dof
+                hd_euler_list.append(range(head, head + 3))
+                head += 3
+                rd_euler_list.append(range(head, head + 3))
+                head += 3
+                rdd_euler_list.append(range(head, head + 3))
+                head += 3
+            else:
+                qd_euler_list.append(None)
+                hd_euler_list.append(None)
+                rd_euler_list.append(None)
+                rdd_euler_list.append(None)
+
             com_list.append(range(head, head + 3))
             head += 3
+
             contact_point_kin_list_list.append([])
             for j in range(n_contact):
                 contact_point_kin_list_list[i].append(range(head, head + 3))
@@ -224,6 +232,19 @@ class EqConst:
 
     def __call__(self, vec: np.ndarray, with_jacobian: bool) -> Tuple[np.ndarray, np.ndarray]:
         out = np.zeros(self.eq_range_table.n_const)
+
+        filled_indices = set()
+        debug = True
+
+        def get_union_set(indices):
+            if not debug:
+                return
+            intersection = filled_indices.intersection(set(indices))
+            print(intersection)
+            if len(intersection) > 0:
+                raise ValueError("Overlapping indices")
+            return filled_indices.union(set(indices))
+
         for i in range(self.T):
             q_i = vec[self.var_range_table.q_list[i]]
             qd_i = vec[self.var_range_table.qd_list[i]]
@@ -242,6 +263,7 @@ class EqConst:
                 F_ij = vec[self.var_range_table.F_list_list[i][j]]
                 var -= F_ij
             out[self.eq_range_table.com_dyn_list[i]] = var
+            filled_indices = get_union_set(self.eq_range_table.com_dyn_list[i])
 
             # (7b) com momentum
             var = hd_i
@@ -250,11 +272,13 @@ class EqConst:
                 c_ij = vec[self.var_range_table.c_list_list[i][j]]
                 var -= np.cross(c_ij - r_i, F_ij)
             out[self.eq_range_table.com_mom_list[i]] = var
+            filled_indices = get_union_set(self.eq_range_table.com_mom_list[i])
 
             # (7c) centroidal angular momentum
             Ag = pin.computeCentroidalMap(self.pinwrap.model, self.pinwrap.data, q_i)[3:, :]
             var = h_i - np.dot(Ag, qd_i)
             out[self.eq_range_table.cam_list[i]] = var
+            filled_indices = get_union_set(self.eq_range_table.cam_list[i])
 
             if i > 0:
                 # (7d) qd_euler
@@ -263,28 +287,36 @@ class EqConst:
                 dq = np.hstack([v_i, self.dquad_dt(quad_i, omega_i), jointd_i]) * dt_i
                 q_im = vec[self.var_range_table.q_list[i - 1]]
                 out[self.eq_range_table.qd_euler_list[i]] = (q_i - q_im) - dq
+                filled_indices = get_union_set(self.eq_range_table.qd_euler_list[i])
 
                 # (7e) hd_euler
                 h_im = vec[self.var_range_table.h_list[i - 1]]
                 out[self.eq_range_table.hd_euler_list[i]] = (h_i - h_im) - dt_i * hd_i
+                filled_indices = get_union_set(self.eq_range_table.hd_euler_list[i])
 
                 # (7f) rd_euler
                 r_im = vec[self.var_range_table.r_list[i - 1]]
                 rd_im = vec[self.var_range_table.rd_list[i - 1]]
                 out[self.eq_range_table.rd_euler_list[i]] = (r_i - r_im) - dt_i * (rd_i + rd_im) / 2
+                filled_indices = get_union_set(self.eq_range_table.rd_euler_list[i])
 
                 # (7g) rdd_euler
                 out[self.eq_range_table.rdd_euler_list[i]] = (rd_i - rd_im) - dt_i * rdd_i
+                filled_indices = get_union_set(self.eq_range_table.rdd_euler_list[i])
 
             # (7h) com
             com = pin.centerOfMass(self.pinwrap.model, self.pinwrap.data, q_i)
             out[self.eq_range_table.com_list[i]] = r_i - com
+            filled_indices = get_union_set(self.eq_range_table.com_list[i])
 
             # (7i) contact point kinematics
             for j in range(self.n_contact):
                 c_ij = vec[self.var_range_table.c_list_list[i][j]]
                 p_ij = self.pinwrap.get_frame_coords(self.pinwrap.ee_fid_list[j]).translation
                 out[self.eq_range_table.contact_point_kin_list_list[i][j]] = c_ij - p_ij
+                filled_indices = get_union_set(
+                    self.eq_range_table.contact_point_kin_list_list[i][j]
+                )
 
             # (7j) fixed contact
             for j in range(self.n_contact):
@@ -292,6 +324,7 @@ class EqConst:
                 out[self.eq_range_table.fixed_contact_list_list[i][j]] = (
                     c_ij - self.ef_points_list[j]
                 )
+                filled_indices = get_union_set(self.eq_range_table.fixed_contact_list_list[i][j])
 
             # force as linear combination of friction pyramid
             for j in range(self.n_contact):
@@ -300,3 +333,7 @@ class EqConst:
                 out[self.eq_range_table.lincomb_vec_list_list[i][j]] = (
                     beta_ij @ self.friction_pyramid - F_ij
                 )
+                filled_indices = get_union_set(self.eq_range_table.lincomb_vec_list_list[i][j])
+
+        if not debug:
+            assert set(filled_indices) == set(list(range(self.eq_range_table.n_const)))
