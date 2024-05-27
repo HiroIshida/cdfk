@@ -16,6 +16,7 @@ class VarnameRangeTable:
     rdd_list: List[range]  # com acceleration
     c_list_list: List[List[range]]  # contact point
     F_list_list: List[List[range]]  # contact force
+    betas_list_list: List[List[range]]  # linear combination
     h_list: List[range]  # momentum
     hd_list: List[range]  # momentum rate
     dt_list: List[range]  # time step
@@ -31,6 +32,7 @@ class VarnameRangeTable:
         rdd_list = []
         c_list_list = []
         F_list_list = []
+        betas_list_list = []
         h_list = []
         hd_list = []
         dt_list = []
@@ -50,13 +52,18 @@ class VarnameRangeTable:
 
             c_list = []
             F_list = []
+            betas_list = []
             for j in range(n_contact):
                 c_list.append(range(head, head + 3))
                 head += 3
                 F_list.append(range(head, head + 3))
                 head += 3
+                betas_list.append(range(head, head + 4))
+                head += 4
+
             c_list_list.append(c_list)
             F_list_list.append(F_list)
+            betas_list_list.append(betas_list)
 
             h_list.append(range(head, head + 3))
             head += 3
@@ -72,6 +79,7 @@ class VarnameRangeTable:
             rdd_list,
             c_list_list,
             F_list_list,
+            betas_list_list,
             h_list,
             hd_list,
             dt_list,
@@ -89,8 +97,9 @@ class EqConstRangeTable:
     rd_euler_list: List[range]  # (7f)
     rdd_euler_list: List[range]  # (7g)
     com_list: List[range]  # (7h)
-    contact_point_kin_list: List[List[range]]  # (7i)
-    fixed_contact_list: List[List[range]]  # (7j)
+    contact_point_kin_list_list: List[List[range]]  # (7i)
+    fixed_contact_list_list: List[List[range]]  # (7j)
+    lincomb_vec_list_list: List[List[range]]
     n_const: int  # total number of equality constraints
 
     @classmethod
@@ -103,8 +112,9 @@ class EqConstRangeTable:
         rd_euler_list = []
         rdd_euler_list = []
         com_list = []
-        contact_point_kin_list = []
-        fixed_contact_list = []
+        contact_point_kin_list_list = []
+        fixed_contact_list_list = []
+        lincomb_vec_list_list = []
 
         head = 0
         for i in range(T):
@@ -124,14 +134,22 @@ class EqConstRangeTable:
             head += 3
             com_list.append(range(head, head + 3))
             head += 3
-            contact_point_kin_list.append([])
+            contact_point_kin_list_list.append([])
             for j in range(n_contact):
-                contact_point_kin_list[i].append(range(head, head + 3))
+                contact_point_kin_list_list[i].append(range(head, head + 3))
                 head += 3
-            fixed_contact_list.append([])
+            fixed_contact_list_list.append([])
             for j in range(n_contact):
-                fixed_contact_list[i].append(range(head, head + 3))
+                fixed_contact_list_list[i].append(range(head, head + 3))
                 head += 3
+
+            # considering we approximate the friction cone by a four-sided pyramid
+            lincomb_vec_list = []
+            for j in range(n_contact):
+                lincomb_vec_list.append(range(head, head + 3))
+                head += 3
+            lincomb_vec_list_list.append(lincomb_vec_list)
+
         return cls(
             com_dyn_list,
             com_mom_list,
@@ -141,8 +159,9 @@ class EqConstRangeTable:
             rd_euler_list,
             rdd_euler_list,
             com_list,
-            contact_point_kin_list,
-            fixed_contact_list,
+            contact_point_kin_list_list,
+            fixed_contact_list_list,
+            lincomb_vec_list_list,
             head,
         )
 
@@ -155,6 +174,7 @@ class EqConst:
     m: float
     pinwrap: PinocchioWrap
     ef_points_list: List[np.ndarray]
+    friction_pyramid: np.ndarray
 
     def __init__(self, T: int, pinwrap: PinocchioWrap, q_ef_hold: np.ndarray):
         dof = pinwrap.model.nq
@@ -172,6 +192,17 @@ class EqConst:
         self.m = pin.computeTotalMass(pinwrap.model)
         self.pinwrap = pinwrap
         self.ef_points_list = ef_points_list
+
+        mu = 0.5
+        friction_pyramid = np.array(
+            [
+                [mu / np.sqrt(2), mu / np.sqrt(2), 1],
+                [-mu / np.sqrt(2), mu / np.sqrt(2), 1],
+                [-mu / np.sqrt(2), -mu / np.sqrt(2), 1],
+                [mu / np.sqrt(2), -mu / np.sqrt(2), 1],
+            ]
+        )
+        self.friction_pyramid = friction_pyramid
 
     @property
     def n_contact(self) -> int:
@@ -227,7 +258,7 @@ class EqConst:
 
             if i > 0:
                 # (7d) qd_euler
-                x_i, quad_i, joint_i = q_i[:3], q_i[3:7], q_i[7:]
+                _, quad_i, _ = q_i[:3], q_i[3:7], q_i[7:]
                 v_i, omega_i, jointd_i = qd_i[:3], qd_i[3:6], qd_i[6:]
                 dq = np.hstack([v_i, self.dquad_dt(quad_i, omega_i), jointd_i]) * dt_i
                 q_im = vec[self.var_range_table.q_list[i - 1]]
@@ -253,9 +284,19 @@ class EqConst:
             for j in range(self.n_contact):
                 c_ij = vec[self.var_range_table.c_list_list[i][j]]
                 p_ij = self.pinwrap.get_frame_coords(self.pinwrap.ee_fid_list[j]).translation
-                out[self.eq_range_table.contact_point_kin_list[i][j]] = c_ij - p_ij
+                out[self.eq_range_table.contact_point_kin_list_list[i][j]] = c_ij - p_ij
 
             # (7j) fixed contact
             for j in range(self.n_contact):
                 c_ij = vec[self.var_range_table.c_list_list[i][j]]
-                out[self.eq_range_table.fixed_contact_list[i][j]] = c_ij - self.ef_points_list[j]
+                out[self.eq_range_table.fixed_contact_list_list[i][j]] = (
+                    c_ij - self.ef_points_list[j]
+                )
+
+            # force as linear combination of friction pyramid
+            for j in range(self.n_contact):
+                F_ij = vec[self.var_range_table.F_list_list[i][j]]
+                beta_ij = vec[self.var_range_table.betas_list_list[i][j]]
+                out[self.eq_range_table.lincomb_vec_list_list[i][j]] = (
+                    beta_ij @ self.friction_pyramid - F_ij
+                )
